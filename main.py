@@ -1,50 +1,34 @@
-import queue
 import time
 from concurrent import futures
 import boto3
+from src.data_holder import get_data_storage, upload_file
 from src.logger import create_logger
 from src.spider import process
 import os
 
-bucket_name = os.getenv('BUCKET_NAME')
-msg_queue_name = os.getenv('MSG_QUEUE')
-parallel_level = os.getenv('PARALLEL_LEVEL')
-
-
-def upload_file(queue, s3, file_name, logger, bucket=bucket_name):
-    stored = ''
-
-    logger.info(f'PREPARING_UPLOAD - {file_name}')
-    while not queue.empty():
-        stored += queue.get() + '\n'
-
-    s3.put_object(
-        Body=stored,
-        Bucket=bucket,
-        Key=file_name
-    )
-
-    logger.info(f'SUCCESS_UPLOAD - {file_name}')
+MSG_QUEUE = os.getenv('MSG_QUEUE')
+PARALLEL_LEVEL = int(os.getenv('PARALLEL_LEVEL'))
+BATCH_MESSAGE = int(os.getenv('BATCH_MESSAGE'))
+WAIT_TIMEOUT_MSG = int(os.getenv('WAIT_TIMEOUT_MSG'))
 
 
 def main():
-    is_working = False
+    _is_working = False
     for message in msg_queue.receive_messages(MessageAttributeNames=['ID'],
-                                              MaxNumberOfMessages=10,
-                                              WaitTimeSeconds=3):
-        is_working = True
+                                              MaxNumberOfMessages=BATCH_MESSAGE,
+                                              WaitTimeSeconds=WAIT_TIMEOUT_MSG):
+        _is_working = True
         begin = time.time()
         file_name = message.message_attributes.get('ID').get('StringValue')
         try:
             logger.info(f'START - {file_name}')
             urls = [url.strip() for url in message.body.split('\n')]
 
-            with futures.ThreadPoolExecutor(max_workers=int(parallel_level)) as executor:
+            with futures.ThreadPoolExecutor(max_workers=PARALLEL_LEVEL) as executor:
                 for url in urls:
-                    executor.submit(process, url, user, questions, logger, msg_queue)
+                    executor.submit(process, url, data_holder, logger, msg_queue)
 
-            upload_file(questions, s3, f'{file_name}_questions', logger)
-            upload_file(user, s3, f'{file_name}_users', logger)
+            upload_file(data_holder, file_name, logger)
 
         except Exception as err:
             logger.critical(err)
@@ -54,18 +38,15 @@ def main():
         finally:
             logger.info(f'DURATION - {time.time() - begin}')
 
-    return is_working
+    return _is_working
 
 
 if __name__ == '__main__':
     logger = create_logger()
-    user = queue.Queue()
-    questions = queue.Queue()
+    data_holder = get_data_storage()
 
     sqs = boto3.resource('sqs')
-    msg_queue = sqs.get_queue_by_name(QueueName=msg_queue_name)
-
-    s3 = boto3.client('s3')
+    msg_queue = sqs.get_queue_by_name(QueueName=MSG_QUEUE)
 
     while True:
         is_working = main()
